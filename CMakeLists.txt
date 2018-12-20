@@ -171,7 +171,7 @@ if (BUILD_PYTHON)
     endif ()
 endif()
 
-include_directories(common/ json/ ${Boost_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS})
+include_directories(common/ json/ ${Boost_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS} /opt/or-tools/include)
 aux_source_directory(common/ COMMON_SRC_FILES)
 aux_source_directory(json/ JSON_PARSER_FILES)
 set(COMMON_FILES ${COMMON_SRC_FILES} ${JSON_PARSER_FILES})
@@ -248,6 +248,10 @@ foreach (family ${ARCH})
         if (BUILD_PYTHON)
             target_link_libraries(${target} LINK_PUBLIC ${PYTHON_LIBRARIES})
         endif()
+        target_link_libraries(${target}
+            LINK_PUBLIC /opt/or-tools/lib/libglog.so
+            LINK_PUBLIC /opt/or-tools/lib/libortools.so
+        )
     endforeach (target)
 endforeach (family)
 

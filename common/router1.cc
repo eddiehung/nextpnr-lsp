@@ -24,6 +24,63 @@
 #include "router1.h"
 #include "timing.h"
 
+// From https://github.com/hlinus/eth-algolab-old/blob/master/09_real_estate/src/09_real_estate.cpp
+// BGL includes
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/edmonds_karp_max_flow.hpp>
+#include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
+#include <boost/graph/cycle_canceling.hpp>
+#include <boost/graph/find_flow_cost.hpp>
+// Namespaces
+using namespace boost;
+using namespace std;
+
+#include "ortools/graph/min_cost_flow.h"
+
+// BGL Graph definitions
+// =====================
+// Graph Type with nested interior edge properties for Cost Flow Algorithms
+typedef adjacency_list_traits<vecS, vecS, directedS> Traits;
+typedef adjacency_list<vecS, vecS, directedS, no_property,
+		property<edge_capacity_t, long,
+		property<edge_residual_capacity_t, long,
+		property<edge_reverse_t, Traits::edge_descriptor,
+		property <edge_weight_t, long> > > > > Graph;
+// Interior Property Maps
+typedef property_map<Graph, edge_capacity_t>::type      EdgeCapacityMap;
+typedef property_map<Graph, edge_weight_t >::type       EdgeWeightMap;
+typedef property_map<Graph, edge_residual_capacity_t>::type ResidualCapacityMap;
+typedef property_map<Graph, edge_reverse_t>::type       ReverseEdgeMap;
+typedef graph_traits<Graph>::vertex_descriptor          Vertex;
+typedef graph_traits<Graph>::edge_descriptor            Edge;
+typedef graph_traits<Graph>::out_edge_iterator  OutEdgeIt; // Iterator
+
+// Custom Edge Adder Class, that holds the references
+// to the graph, capacity map, weight map and reverse edge map
+// ===============================================================
+class EdgeAdder {
+	Graph &G;
+	EdgeCapacityMap &capacitymap;
+	EdgeWeightMap &weightmap;
+	ReverseEdgeMap  &revedgemap;
+
+public:
+	EdgeAdder(Graph & G, EdgeCapacityMap &capacitymap, EdgeWeightMap &weightmap, ReverseEdgeMap &revedgemap)
+: G(G), capacitymap(capacitymap), weightmap(weightmap), revedgemap(revedgemap) {}
+
+	void addEdge(int u, int v, long c, long w) {
+		Edge e, reverseE;
+		tie(e, tuples::ignore) = add_edge(u, v, G);
+		tie(reverseE, tuples::ignore) = add_edge(v, u, G);
+		capacitymap[e] = c;
+		weightmap[e] = w;
+		capacitymap[reverseE] = 0;
+		weightmap[reverseE] = -w;
+		revedgemap[e] = reverseE;
+		revedgemap[reverseE] = e;
+	}
+};
+
 namespace {
 
 USING_NEXTPNR_NAMESPACE
@@ -467,7 +524,7 @@ struct Router1
                 ctx->unbindWire(wire);
             }
         }
-
+#if 0
         // reset wire queue
 
         if (!queue.empty()) {
@@ -723,7 +780,127 @@ struct Router1
             arcs_with_ripup++;
         else
             arcs_without_ripup++;
+#elif 0
+        // Create Graph and Maps
+		Graph G;
+		EdgeCapacityMap capacitymap = get(edge_capacity, G);
+		EdgeWeightMap weightmap = get(edge_weight, G);
+		ReverseEdgeMap revedgemap = get(edge_reverse, G);
+		ResidualCapacityMap rescapacitymap = get(edge_residual_capacity, G);
+		EdgeAdder eaG(G, capacitymap, weightmap, revedgemap);
 
+        for (auto wire : ctx->getWires()) {
+            auto d = ctx->getWireDelay(wire).maxDelay();
+            eaG.addEdge(wire.index*2, wire.index*2+1, 1, -d);
+        }
+
+        for (auto pip : ctx->getPips()) {
+            auto s = ctx->getPipSrcWire(pip);
+            auto t = ctx->getPipDstWire(pip);
+            auto d = ctx->getPipDelay(pip).maxDelay();
+            float f = ctx->rng() / float(0x3fffffff);
+            eaG.addEdge(s.index*2+1, t.index*2, 1, f < 0.01 ? -d : 0);
+        }
+
+        log("# pips %d\n", ctx->chip_info->num_pips);
+        log("# wires %d\n", ctx->chip_info->num_wires);
+        log("Max flowing\n");
+        auto flow = edmonds_karp_max_flow(G, src_wire.index*2, dst_wire.index*2+1);
+        log("%ld\n", flow);
+        log("Cycle cancelling\n");
+        cycle_canceling(G);
+        //successive_shortest_path_nonnegative_weights(G, src_wire.index*2, dst_wire.index*2+1);
+        log("%ld\n", find_flow_cost(G));
+#else
+        using namespace operations_research;
+
+        StarGraph graph(ctx->chip_info->num_wires*2, ctx->chip_info->num_pips + ctx->chip_info->num_wires);
+        MinCostFlow min_cost_flow(&graph);
+        //min_cost_flow.SetUseUpdatePrices(true);
+        min_cost_flow.SetCheckFeasibility(false);
+
+        for (auto wire : ctx->getWires()) {
+            //auto d = ctx->getWireDelay(wire).maxDelay();
+            //float f = ctx->rng() / float(0x3fffffff);
+
+            ArcIndex a = graph.AddArc(wire.index*2, wire.index*2+1);
+            min_cost_flow.SetArcCapacity(a, 1);
+            min_cost_flow.SetArcUnitCost(a, -1000000000000);
+        }
+
+        for (auto pip : ctx->getPips()) {
+            if (!ctx->checkPipAvail(pip)) continue;
+            auto s = ctx->getPipSrcWire(pip);
+            auto t = ctx->getPipDstWire(pip);
+            auto d = ctx->getPipDelay(pip).maxDelay();
+            float f = ctx->rng() / float(0x3fffffff);
+
+            ArcIndex a = graph.AddArc(s.index*2+1, t.index*2);
+            min_cost_flow.SetArcCapacity(a, 1);
+            min_cost_flow.SetArcUnitCost(a, f > 0.0001 ? -d * 1000000 : 1);
+        }
+
+        log("# pips %d\n", ctx->chip_info->num_pips);
+        log("# wires %d\n", ctx->chip_info->num_wires);
+
+        min_cost_flow.SetNodeSupply(src_wire.index*2, 1);
+        min_cost_flow.SetNodeSupply(dst_wire.index*2+1, -1);
+
+        min_cost_flow.Solve();
+        assert(MinCostFlow::OPTIMAL == min_cost_flow.status());
+        FlowQuantity total_flow_cost = min_cost_flow.GetOptimalCost();
+        log("cost = %lld\n", total_flow_cost);
+
+        wire_to_arcs[dst_wire].insert(arc);
+        arc_to_wires[arc].insert(dst_wire);
+
+        NodeIndex head = dst_wire.index*2;
+        WireId cursor = dst_wire;
+        while (1) {
+            for (StarGraph::IncomingArcIterator it(graph, head); it.Ok();
+                 it.Next()) {
+                const ArcIndex a = it.Index();
+                if (min_cost_flow.Flow(a) == 0) continue;
+                assert(graph.Head(a) == head);
+                auto tail = graph.Tail(a);
+                assert((tail & 1) == 1);
+                WireId next_wire;
+                next_wire.index = tail / 2;
+
+                NPNR_ASSERT(!net_info->wires.count(next_wire));
+                NPNR_ASSERT(ctx->checkWireAvail(next_wire));
+
+                for (auto pip: ctx->getPipsDownhill(next_wire)) {
+                    if (ctx->getPipDstWire(pip) != cursor) continue;
+
+                    NPNR_ASSERT(ctx->checkPipAvail(pip));
+                    if (ctx->debug)
+                        log("    bind pip %s\n", ctx->nameOfPip(pip));
+                    ctx->bindPip(pip, net_info, STRENGTH_WEAK);
+
+                    wire_to_arcs[cursor].insert(arc);
+                    arc_to_wires[arc].insert(cursor);
+                    break;
+                }
+
+                head = tail - 1;
+                cursor.index = head / 2;
+                break;
+            }
+
+            if (cursor == src_wire) break;
+        }
+
+
+        if (ctx->debug)
+            log("    bind wire %s\n", ctx->nameOfWire(src_wire));
+        ctx->bindWire(src_wire, net_info, STRENGTH_WEAK);
+        wire_to_arcs[src_wire].insert(arc);
+        arc_to_wires[arc].insert(src_wire);
+
+        log("%% pips %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_pips));
+        log("%% wires %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_wires));
+#endif
         return true;
     }
 };
