@@ -769,8 +769,7 @@ struct Router1
         FlowQuantity total_flow_cost = min_cost_flow.GetOptimalCost();
         log("cost = %lld\n", total_flow_cost);
 
-        wire_to_arcs[dst_wire].insert(arc);
-        arc_to_wires[arc].insert(dst_wire);
+        std::unordered_set<PipId> visited;
 
         NodeIndex head = dst_wire.index*2;
         WireId cursor = dst_wire;
@@ -792,23 +791,25 @@ struct Router1
                     if (ctx->getPipDstWire(pip) != cursor) continue;
 
                     NPNR_ASSERT(ctx->checkPipAvail(pip));
-                    if (ctx->debug)
-                        log("    bind pip %s\n", ctx->nameOfPip(pip));
-                    ctx->bindPip(pip, net_info, STRENGTH_WEAK);
-
-                    wire_to_arcs[cursor].insert(arc);
-                    arc_to_wires[arc].insert(cursor);
-                    break;
+                    visited.insert(pip);
                 }
 
                 head = tail - 1;
                 cursor.index = head / 2;
                 break;
             }
-
             if (cursor == src_wire) break;
         }
 
+        for (auto pip : visited) {
+            if (ctx->debug)
+                log("    bind pip %s\n", ctx->nameOfPip(pip));
+            ctx->bindPip(pip, net_info, STRENGTH_WEAK);
+
+            auto cursor = ctx->getPipDstWire(pip);
+            wire_to_arcs[cursor].insert(arc);
+            arc_to_wires[arc].insert(cursor);
+        }
 
         if (ctx->debug)
             log("    bind wire %s\n", ctx->nameOfWire(src_wire));
