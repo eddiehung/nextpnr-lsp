@@ -1,2 +1,5 @@
+#set_io led1 B5
+#set_io clki B4
+
 set_io led1 1
 set_io clki 2

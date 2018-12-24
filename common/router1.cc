@@ -37,6 +37,15 @@ using namespace std;
 
 #include "ortools/graph/min_cost_flow.h"
 
+#include <lemon/list_graph.h>
+#include <lemon/maps.h>
+#include <lemon/capacity_scaling.h>
+#include <lemon/cost_scaling.h>
+#include <lemon/network_simplex.h>
+#include <lemon/cycle_canceling.h>
+
+#include "z3++.h"
+
 // BGL Graph definitions
 // =====================
 // Graph Type with nested interior edge properties for Cost Flow Algorithms
@@ -811,7 +820,7 @@ struct Router1
         cycle_canceling(G);
         //successive_shortest_path_nonnegative_weights(G, src_wire.index*2, dst_wire.index*2+1);
         log("%ld\n", find_flow_cost(G));
-#else
+#elif 1
         using namespace operations_research;
 
         StarGraph graph(ctx->chip_info->num_wires*2, ctx->chip_info->num_pips + ctx->chip_info->num_wires);
@@ -825,19 +834,19 @@ struct Router1
 
             ArcIndex a = graph.AddArc(wire.index*2, wire.index*2+1);
             min_cost_flow.SetArcCapacity(a, 1);
-            min_cost_flow.SetArcUnitCost(a, -1000000000000);
+            min_cost_flow.SetArcUnitCost(a, -(ctx->rng() + 1));
         }
 
         for (auto pip : ctx->getPips()) {
             if (!ctx->checkPipAvail(pip)) continue;
             auto s = ctx->getPipSrcWire(pip);
             auto t = ctx->getPipDstWire(pip);
-            auto d = ctx->getPipDelay(pip).maxDelay();
-            float f = ctx->rng() / float(0x3fffffff);
+            //auto d = ctx->getPipDelay(pip).maxDelay();
+            //float f = ctx->rng() / float(0x3fffffff);
 
             ArcIndex a = graph.AddArc(s.index*2+1, t.index*2);
             min_cost_flow.SetArcCapacity(a, 1);
-            min_cost_flow.SetArcUnitCost(a, f > 0.0001 ? -d * 1000000 : 1);
+            min_cost_flow.SetArcUnitCost(a, 0);
         }
 
         log("# pips %d\n", ctx->chip_info->num_pips);
@@ -900,6 +909,142 @@ struct Router1
 
         log("%% pips %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_pips));
         log("%% wires %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_wires));
+#elif 0
+        log("# pips %d\n", ctx->chip_info->num_pips);
+        log("# wires %d\n", ctx->chip_info->num_wires);
+
+        using namespace lemon;
+        ListDigraph graph;
+        ConstMap<typename ListDigraph::Arc,int> capacity_map(1);
+        ListDigraph::ArcMap<int> cost_map(graph);
+
+        std::unordered_map<WireId, std::pair<ListDigraph::Node,ListDigraph::Node>> w2n;
+
+        for (auto wire : ctx->getWires()) {
+            auto n1 = graph.addNode();
+            auto n2 = graph.addNode();
+            w2n.emplace(wire, std::make_pair(n1,n2));
+            auto a = graph.addArc(n1, n2);
+            cost_map[a] = -1;
+        }
+
+        for (auto pip : ctx->getPips()) {
+            if (!ctx->checkPipAvail(pip)) continue;
+            auto s = ctx->getPipSrcWire(pip);
+            auto t = ctx->getPipDstWire(pip);
+
+            auto n1 = w2n.at(s).second;
+            auto n2 = w2n.at(t).first;
+
+            auto a = graph.addArc(n1, n2);
+            cost_map[a] = 0;
+        }
+
+        //typedef CapacityScaling<ListDigraph, int> MCF;
+        //typedef CostScaling<ListDigraph, int> MCF;
+        typedef NetworkSimplex<ListDigraph, int> MCF;
+        //typedef CycleCanceling<ListDigraph, int> MCF;
+        MCF mcf(graph);
+        mcf.upperMap(capacity_map);
+        mcf.stSupply(w2n.at(src_wire).first, w2n.at(dst_wire).second, 1);
+        mcf.costMap(cost_map);
+        auto pt = mcf.run();
+        NPNR_ASSERT(pt == MCF::OPTIMAL);
+        log("%d\n", mcf.totalCost());
+#else
+        using namespace z3;
+
+        context z3;
+        solver s(z3);
+        //optimize s(z3);
+
+        expr_vector wires(z3);
+        expr_vector pips(z3);
+
+        for (auto wire : ctx->getWires()) {
+            auto e = z3.bool_const(ctx->getWireName(wire).c_str(ctx));
+            wires.push_back(e);
+        }
+
+        for (auto pip : ctx->getPips()) {
+            auto e = z3.bool_const(ctx->getPipName(pip).c_str(ctx));
+            pips.push_back(e);
+            if (!ctx->checkPipAvail(pip)) {
+                s.add(!e);
+                continue;
+            }
+
+            auto sw = ctx->getPipSrcWire(pip);
+            auto tw = ctx->getPipDstWire(pip);
+            s.add(implies(e, wires[sw.index] && wires[tw.index]));
+        }
+
+        for (auto wire : ctx->getWires()) {
+            expr_vector uphill(z3);
+            for (auto pip : ctx->getPipsUphill(wire)) {
+                if (!ctx->checkPipAvail(pip)) continue;
+                NPNR_ASSERT(ctx->getPipDstWire(pip) == wire);
+                uphill.push_back(pips[pip.index]);
+            }
+            if (!uphill.empty()) {
+                s.add(atmost(uphill, 1));
+                s.add(implies(mk_or(uphill), wires[wire.index]));
+            }
+            else if (wire != src_wire) {
+                s.add(!wires[wire.index]);
+            }
+
+            expr_vector downhill(z3);
+            for (auto pip : ctx->getPipsDownhill(wire)) {
+                if (!ctx->checkPipAvail(pip)) continue;
+                NPNR_ASSERT(ctx->getPipSrcWire(pip) == wire);
+                downhill.push_back(pips[pip.index]);
+            }
+            if (!downhill.empty()) {
+                s.add(atmost(downhill, 1));
+                s.add(implies(wires[wire.index], mk_or(downhill)));
+            }
+            else if (wire != dst_wire) {
+                s.add(!wires[wire.index]);
+            }
+        }
+
+        //auto mid_wire = ctx->getWireByName(ctx->id("X0/Y7/span4_vert_b_2"));
+        s.add(wires[src_wire.index]);
+        //s.add(wires[mid_wire.index]);
+        s.add(wires[dst_wire.index]);
+        //auto h = s.maximize(wires[dst_wire.index]);
+
+        set_param("verbose", 10);
+        //boost::timer::cpu_timer timer;
+        std::cout << s.check() << "\n";
+        //std::cout << s.lower(h) << "\n";
+        //std::cout << timer.format() << std::endl;
+        std::cout << s.statistics() << "\n";
+        std::cout << std::flush;
+
+        model m = s.get_model();
+        for (unsigned i = 0; i < m.size(); i++) {
+            func_decl v = m[i];
+            // this problem contains only constants
+            assert(v.arity() == 0); 
+            auto e = m.get_const_interp(v);
+            if (e.is_true()) {
+                auto vname = v.name().str();
+                //std::cout << vname << std::endl;
+                if (vname.find(".->.") != std::string::npos) {
+                    auto pip = ctx->getPipByName(ctx->id(vname));
+                    std::cout << vname << std::endl;
+                    assert(ctx->checkPipAvail(pip));
+                    ctx->bindPip(pip, net_info, STRENGTH_WEAK);
+                }
+            }
+            //if (e.is_int()) {
+            //    auto vname = v.name().str();
+            //    std::cout << vname << " = " << e.get_numeral_int() << std::endl;
+            //}
+        }
+
 #endif
         return true;
     }
