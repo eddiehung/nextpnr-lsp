@@ -24,71 +24,11 @@
 #include "router1.h"
 #include "timing.h"
 
-// From https://github.com/hlinus/eth-algolab-old/blob/master/09_real_estate/src/09_real_estate.cpp
-// BGL includes
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/edmonds_karp_max_flow.hpp>
-#include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
-#include <boost/graph/cycle_canceling.hpp>
-#include <boost/graph/find_flow_cost.hpp>
 // Namespaces
 using namespace boost;
 using namespace std;
 
 #include "ortools/graph/min_cost_flow.h"
-
-#include <lemon/list_graph.h>
-#include <lemon/maps.h>
-#include <lemon/capacity_scaling.h>
-#include <lemon/cost_scaling.h>
-#include <lemon/network_simplex.h>
-#include <lemon/cycle_canceling.h>
-
-#include "z3++.h"
-
-// BGL Graph definitions
-// =====================
-// Graph Type with nested interior edge properties for Cost Flow Algorithms
-typedef adjacency_list_traits<vecS, vecS, directedS> Traits;
-typedef adjacency_list<vecS, vecS, directedS, no_property,
-		property<edge_capacity_t, long,
-		property<edge_residual_capacity_t, long,
-		property<edge_reverse_t, Traits::edge_descriptor,
-		property <edge_weight_t, long> > > > > Graph;
-// Interior Property Maps
-typedef property_map<Graph, edge_capacity_t>::type      EdgeCapacityMap;
-typedef property_map<Graph, edge_weight_t >::type       EdgeWeightMap;
-typedef property_map<Graph, edge_residual_capacity_t>::type ResidualCapacityMap;
-typedef property_map<Graph, edge_reverse_t>::type       ReverseEdgeMap;
-typedef graph_traits<Graph>::vertex_descriptor          Vertex;
-typedef graph_traits<Graph>::edge_descriptor            Edge;
-typedef graph_traits<Graph>::out_edge_iterator  OutEdgeIt; // Iterator
-
-// Custom Edge Adder Class, that holds the references
-// to the graph, capacity map, weight map and reverse edge map
-// ===============================================================
-class EdgeAdder {
-	Graph &G;
-	EdgeCapacityMap &capacitymap;
-	EdgeWeightMap &weightmap;
-	ReverseEdgeMap  &revedgemap;
-
-public:
-	EdgeAdder(Graph & G, EdgeCapacityMap &capacitymap, EdgeWeightMap &weightmap, ReverseEdgeMap &revedgemap)
-: G(G), capacitymap(capacitymap), weightmap(weightmap), revedgemap(revedgemap) {}
-
-	void addEdge(int u, int v, long c, long w) {
-		Edge e, reverseE;
-		tie(e, tuples::ignore) = add_edge(u, v, G);
-		tie(reverseE, tuples::ignore) = add_edge(v, u, G);
-		capacitymap[e] = c;
-		weightmap[e] = w;
-		capacitymap[reverseE] = 0;
-		weightmap[reverseE] = -w;
-		revedgemap[e] = reverseE;
-		revedgemap[reverseE] = e;
-	}
-};
 
 namespace {
 
@@ -789,38 +729,7 @@ struct Router1
             arcs_with_ripup++;
         else
             arcs_without_ripup++;
-#elif 0
-        // Create Graph and Maps
-		Graph G;
-		EdgeCapacityMap capacitymap = get(edge_capacity, G);
-		EdgeWeightMap weightmap = get(edge_weight, G);
-		ReverseEdgeMap revedgemap = get(edge_reverse, G);
-		ResidualCapacityMap rescapacitymap = get(edge_residual_capacity, G);
-		EdgeAdder eaG(G, capacitymap, weightmap, revedgemap);
-
-        for (auto wire : ctx->getWires()) {
-            auto d = ctx->getWireDelay(wire).maxDelay();
-            eaG.addEdge(wire.index*2, wire.index*2+1, 1, -d);
-        }
-
-        for (auto pip : ctx->getPips()) {
-            auto s = ctx->getPipSrcWire(pip);
-            auto t = ctx->getPipDstWire(pip);
-            auto d = ctx->getPipDelay(pip).maxDelay();
-            float f = ctx->rng() / float(0x3fffffff);
-            eaG.addEdge(s.index*2+1, t.index*2, 1, f < 0.01 ? -d : 0);
-        }
-
-        log("# pips %d\n", ctx->chip_info->num_pips);
-        log("# wires %d\n", ctx->chip_info->num_wires);
-        log("Max flowing\n");
-        auto flow = edmonds_karp_max_flow(G, src_wire.index*2, dst_wire.index*2+1);
-        log("%ld\n", flow);
-        log("Cycle cancelling\n");
-        cycle_canceling(G);
-        //successive_shortest_path_nonnegative_weights(G, src_wire.index*2, dst_wire.index*2+1);
-        log("%ld\n", find_flow_cost(G));
-#elif 1
+#else
         using namespace operations_research;
 
         StarGraph graph(ctx->chip_info->num_wires*2, ctx->chip_info->num_pips + ctx->chip_info->num_wires);
@@ -909,142 +818,6 @@ struct Router1
 
         log("%% pips %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_pips));
         log("%% wires %.3f\n", wire_to_arcs.size() / float(ctx->chip_info->num_wires));
-#elif 0
-        log("# pips %d\n", ctx->chip_info->num_pips);
-        log("# wires %d\n", ctx->chip_info->num_wires);
-
-        using namespace lemon;
-        ListDigraph graph;
-        ConstMap<typename ListDigraph::Arc,int> capacity_map(1);
-        ListDigraph::ArcMap<int> cost_map(graph);
-
-        std::unordered_map<WireId, std::pair<ListDigraph::Node,ListDigraph::Node>> w2n;
-
-        for (auto wire : ctx->getWires()) {
-            auto n1 = graph.addNode();
-            auto n2 = graph.addNode();
-            w2n.emplace(wire, std::make_pair(n1,n2));
-            auto a = graph.addArc(n1, n2);
-            cost_map[a] = -1;
-        }
-
-        for (auto pip : ctx->getPips()) {
-            if (!ctx->checkPipAvail(pip)) continue;
-            auto s = ctx->getPipSrcWire(pip);
-            auto t = ctx->getPipDstWire(pip);
-
-            auto n1 = w2n.at(s).second;
-            auto n2 = w2n.at(t).first;
-
-            auto a = graph.addArc(n1, n2);
-            cost_map[a] = 0;
-        }
-
-        //typedef CapacityScaling<ListDigraph, int> MCF;
-        //typedef CostScaling<ListDigraph, int> MCF;
-        typedef NetworkSimplex<ListDigraph, int> MCF;
-        //typedef CycleCanceling<ListDigraph, int> MCF;
-        MCF mcf(graph);
-        mcf.upperMap(capacity_map);
-        mcf.stSupply(w2n.at(src_wire).first, w2n.at(dst_wire).second, 1);
-        mcf.costMap(cost_map);
-        auto pt = mcf.run();
-        NPNR_ASSERT(pt == MCF::OPTIMAL);
-        log("%d\n", mcf.totalCost());
-#else
-        using namespace z3;
-
-        context z3;
-        solver s(z3);
-        //optimize s(z3);
-
-        expr_vector wires(z3);
-        expr_vector pips(z3);
-
-        for (auto wire : ctx->getWires()) {
-            auto e = z3.bool_const(ctx->getWireName(wire).c_str(ctx));
-            wires.push_back(e);
-        }
-
-        for (auto pip : ctx->getPips()) {
-            auto e = z3.bool_const(ctx->getPipName(pip).c_str(ctx));
-            pips.push_back(e);
-            if (!ctx->checkPipAvail(pip)) {
-                s.add(!e);
-                continue;
-            }
-
-            auto sw = ctx->getPipSrcWire(pip);
-            auto tw = ctx->getPipDstWire(pip);
-            s.add(implies(e, wires[sw.index] && wires[tw.index]));
-        }
-
-        for (auto wire : ctx->getWires()) {
-            expr_vector uphill(z3);
-            for (auto pip : ctx->getPipsUphill(wire)) {
-                if (!ctx->checkPipAvail(pip)) continue;
-                NPNR_ASSERT(ctx->getPipDstWire(pip) == wire);
-                uphill.push_back(pips[pip.index]);
-            }
-            if (!uphill.empty()) {
-                s.add(atmost(uphill, 1));
-                s.add(implies(mk_or(uphill), wires[wire.index]));
-            }
-            else if (wire != src_wire) {
-                s.add(!wires[wire.index]);
-            }
-
-            expr_vector downhill(z3);
-            for (auto pip : ctx->getPipsDownhill(wire)) {
-                if (!ctx->checkPipAvail(pip)) continue;
-                NPNR_ASSERT(ctx->getPipSrcWire(pip) == wire);
-                downhill.push_back(pips[pip.index]);
-            }
-            if (!downhill.empty()) {
-                s.add(atmost(downhill, 1));
-                s.add(implies(wires[wire.index], mk_or(downhill)));
-            }
-            else if (wire != dst_wire) {
-                s.add(!wires[wire.index]);
-            }
-        }
-
-        //auto mid_wire = ctx->getWireByName(ctx->id("X0/Y7/span4_vert_b_2"));
-        s.add(wires[src_wire.index]);
-        //s.add(wires[mid_wire.index]);
-        s.add(wires[dst_wire.index]);
-        //auto h = s.maximize(wires[dst_wire.index]);
-
-        set_param("verbose", 10);
-        //boost::timer::cpu_timer timer;
-        std::cout << s.check() << "\n";
-        //std::cout << s.lower(h) << "\n";
-        //std::cout << timer.format() << std::endl;
-        std::cout << s.statistics() << "\n";
-        std::cout << std::flush;
-
-        model m = s.get_model();
-        for (unsigned i = 0; i < m.size(); i++) {
-            func_decl v = m[i];
-            // this problem contains only constants
-            assert(v.arity() == 0); 
-            auto e = m.get_const_interp(v);
-            if (e.is_true()) {
-                auto vname = v.name().str();
-                //std::cout << vname << std::endl;
-                if (vname.find(".->.") != std::string::npos) {
-                    auto pip = ctx->getPipByName(ctx->id(vname));
-                    std::cout << vname << std::endl;
-                    assert(ctx->checkPipAvail(pip));
-                    ctx->bindPip(pip, net_info, STRENGTH_WEAK);
-                }
-            }
-            //if (e.is_int()) {
-            //    auto vname = v.name().str();
-            //    std::cout << vname << " = " << e.get_numeral_int() << std::endl;
-            //}
-        }
-
 #endif
         return true;
     }
