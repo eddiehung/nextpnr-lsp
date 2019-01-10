@@ -2,7 +2,7 @@ nextpnr -- a portable FPGA place and route tool
 ===============================================
 
 ***
-### This repository is an artifact supporting the private peer-review process for a submitted conference paper.
+### This repository is an artifact supporting the double-blind peer-review process for a submitted conference paper.
 #### It is based on upstream [nextpnr](https://github.com/YosysHQ/nextpnr).
 #### It also contains (a squashed git subtree of) https://github.com/mraggi/LongestSimplePath modified slightly to add a timeout capability.
 Instructions for reproducing experiment described in the paper:
