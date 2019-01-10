@@ -1,0 +1,3 @@
+read_verilog assign.v
+synth_ice40 -top top
+write_json assign.json

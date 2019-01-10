@@ -28,7 +28,8 @@
 using namespace boost;
 using namespace std;
 
-#include "ortools/graph/min_cost_flow.h"
+#include "digraph.hpp"
+#include "path.hpp"
 
 namespace {
 
@@ -473,7 +474,9 @@ struct Router1
                 ctx->unbindWire(wire);
             }
         }
-#if 0
+
+        if (!getenv("MODE")) {
+
         // reset wire queue
 
         if (!queue.empty()) {
@@ -729,132 +732,84 @@ struct Router1
             arcs_with_ripup++;
         else
             arcs_without_ripup++;
-#else
-        using namespace operations_research;
 
-        std::unordered_set<PipId> pips_visited;
-        std::unordered_set<PipId> all_pips_visited;
+        //log("F_{wires} = %.3f (%zu/%zu)\n", arc_to_wires[arc].size() / float(G.num_vertices()), arc_to_wires[arc].size(), G.num_vertices());
 
-        std::unordered_map<PipId, int64_t> costs;
-        for (auto pip : ctx->getPips()) {
-            costs[pip] = -ctx->rng();
-        }
+        } // if (!getenv("MODE"))
+        else {
+            constexpr weight_t big_weight = 1000000000;
 
-        log("# pips %d\n", ctx->chip_info->num_pips);
-        log("# wires %d\n", ctx->chip_info->num_wires);
+            // Due to pre-processing, vertex indices could be changed, so use names
+            std::vector<std::string> vertex_names;
+            vertex_names.reserve(ctx->chip_info->num_wires);
+            for (auto wire : ctx->getWires())
+                vertex_names.push_back(ctx->getWireName(wire).str(ctx));
 
-        for (int i = 1; ; ++i) {
-            StarGraph graph(ctx->chip_info->num_wires*2, ctx->chip_info->num_pips + ctx->chip_info->num_wires);
-            MinCostFlow min_cost_flow(&graph);
-            //min_cost_flow.SetUseUpdatePrices(true);
-            min_cost_flow.SetCheckFeasibility(false);
-
-            for (auto wire : ctx->getWires()) {
-                //auto d = ctx->getWireDelay(wire).maxDelay();
-                //float f = ctx->rng() / float(0x3fffffff);
-
-                ArcIndex a = graph.AddArc(wire.index*2, wire.index*2+1);
-                min_cost_flow.SetArcCapacity(a, 1);
-                min_cost_flow.SetArcUnitCost(a, 0);
-            }
-
+            srand(0);
+            TimeFromStart();
+            DiGraph G(vertex_names);
             for (auto pip : ctx->getPips()) {
                 if (!ctx->checkPipAvail(pip)) continue;
                 auto s = ctx->getPipSrcWire(pip);
+                if (s != src_wire) {
+                    // Do not add edges from primary inputs that are not src_wire
+                    auto uphill = ctx->getPipsUphill(s);
+                    if (uphill.b.cursor == uphill.e.cursor)
+                        continue;
+                }
                 auto t = ctx->getPipDstWire(pip);
-                //auto d = ctx->getPipDelay(pip).maxDelay();
-                //float f = ctx->rng() / float(0x3fffffff);
-
-                ArcIndex a = graph.AddArc(s.index*2+1, t.index*2);
-                min_cost_flow.SetArcCapacity(a, 1);
-                min_cost_flow.SetArcUnitCost(a, costs.at(pip));
-            }
-
-            min_cost_flow.SetNodeSupply(src_wire.index*2, 1);
-            min_cost_flow.SetNodeSupply(dst_wire.index*2+1, -1);
-
-            min_cost_flow.Solve();
-            assert(MinCostFlow::OPTIMAL == min_cost_flow.status());
-            FlowQuantity total_flow_cost = min_cost_flow.GetOptimalCost();
-            log("cost = %lld\n", total_flow_cost);
-
-            pips_visited.clear();
-
-            NodeIndex head = dst_wire.index*2;
-            WireId cursor = dst_wire;
-            while (1) {
-                for (StarGraph::IncomingArcIterator it(graph, head); it.Ok();
-                     it.Next()) {
-                    const ArcIndex a = it.Index();
-                    if (min_cost_flow.Flow(a) == 0) continue;
-                    assert(graph.Head(a) == head);
-                    auto tail = graph.Tail(a);
-                    assert((tail & 1) == 1);
-                    WireId next_wire;
-                    next_wire.index = tail / 2;
-
-                    NPNR_ASSERT(!net_info->wires.count(next_wire));
-                    NPNR_ASSERT(ctx->checkWireAvail(next_wire));
-
-                    for (auto pip: ctx->getPipsDownhill(next_wire)) {
-                        if (ctx->getPipDstWire(pip) != cursor) continue;
-
-                        NPNR_ASSERT(ctx->checkPipAvail(pip));
-                        pips_visited.insert(pip);
-                        all_pips_visited.insert(pip);
-                        break;
-                    }
-
-                    head = tail - 1;
-                    cursor.index = head / 2;
-                    break;
+                if (t != dst_wire) {
+                    // Do not add edges to primary outputs that are not dst_wire
+                    auto downhill = ctx->getPipsDownhill(t);
+                    if (downhill.b.cursor == downhill.e.cursor)
+                        continue;
                 }
-                if (cursor == src_wire) break;
+                // Heavily heavily encourage starting and ending nodes to be src_wire and dst_wire
+                auto d = ctx->getPipDelay(pip).maxDelay();
+                if (s == src_wire || t == dst_wire)
+                    d += big_weight;
+                G.add_edge(ctx->getWireName(s).str(ctx), ctx->getWireName(t).str(ctx), d);
             }
+            auto PG = G.FindLongestSimplePath();
+            std::cout << PG.cost() - 2*big_weight << std::endl;
 
-            //log("%% pips %.3f\n", (pips_visited.size()-1) / float(ctx->chip_info->num_pips));
-            //log("%% wires %.3f\n", pips_visited.size() / float(ctx->chip_info->num_wires));
-            log("** iteration %d cumulative pips covered %.3f\n", i, (all_pips_visited.size()-1) / float(ctx->chip_info->num_pips));
+            const auto& path = PG.get_path();
+            assert(G.get_vertex_name(path.front()) == ctx->getWireName(src_wire).str(ctx));
+            assert(G.get_vertex_name(path.back()) == ctx->getWireName(dst_wire).str(ctx));
+            auto it = path.begin(), ie = path.end();
+            WireId cursor, next;
+            for (cursor = ctx->getWireByName(ctx->id(G.get_vertex_name(*it++))); it != ie; ++it) {
+                next = ctx->getWireByName(ctx->id(G.get_vertex_name(*it)));
+                assert(next != WireId());
 
-            for (StarGraph::ArcIterator it(graph); it.Ok();
-                 it.Next()) {
-                const ArcIndex a = it.Index();
-                auto head = graph.Head(a);
-                auto tail = graph.Tail(a);
-                if ((tail & 1) == 0) continue;
-                WireId next_wire;
-                next_wire.index = tail / 2;
-                WireId cursor;
-                cursor.index = head / 2;
+                int found = 0;
+                for (auto pip: ctx->getPipsDownhill(cursor)) {
+                    if (ctx->getPipDstWire(pip) != next) continue;
 
-                for (auto pip: ctx->getPipsDownhill(next_wire)) {
-                    if (ctx->getPipDstWire(pip) != cursor) continue;
+                    NPNR_ASSERT(ctx->checkPipAvail(pip));
+                    if (ctx->debug)
+                        log("    bind pip %s\n", ctx->nameOfPip(pip));
+                    ctx->bindPip(pip, net_info, STRENGTH_WEAK);
 
-                    if (min_cost_flow.Flow(a) > 0)
-                        costs[pip] += ctx->rng();
-                    else
-                        costs[pip] -= ctx->rng();
-                    break;
+                    ++found;
                 }
-            }
-        }
+                assert(found == 1);
 
-        for (auto pip : pips_visited) {
+                cursor = next;
+
+                wire_to_arcs[cursor].insert(arc);
+                arc_to_wires[arc].insert(cursor);
+            }
+            assert(cursor == dst_wire);
+
             if (ctx->debug)
-                log("    bind pip %s\n", ctx->nameOfPip(pip));
-            ctx->bindPip(pip, net_info, STRENGTH_WEAK);
-
-            auto cursor = ctx->getPipDstWire(pip);
-            wire_to_arcs[cursor].insert(arc);
-            arc_to_wires[arc].insert(cursor);
+                log("    bind wire %s\n", ctx->nameOfWire(src_wire));
+            ctx->bindWire(src_wire, net_info, STRENGTH_WEAK);
+            wire_to_arcs[src_wire].insert(arc);
+            arc_to_wires[arc].insert(src_wire);
+            log("F_{wires} = %.3f (%zu/%zu)\n", arc_to_wires[arc].size() / float(G.num_vertices()), arc_to_wires[arc].size(), G.num_vertices());
         }
 
-        if (ctx->debug)
-            log("    bind wire %s\n", ctx->nameOfWire(src_wire));
-        ctx->bindWire(src_wire, net_info, STRENGTH_WEAK);
-        wire_to_arcs[src_wire].insert(arc);
-        arc_to_wires[arc].insert(src_wire);
-#endif
         return true;
     }
 };
