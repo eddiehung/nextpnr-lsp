@@ -349,6 +349,7 @@ void PseudoTopoOrder::open_edges_until_no_more_improvement_found()
 	while (timer.Peek() < maxnumseconds)
 	{
 		eXtreme_edge_opener();
+		if (TimeFromStart() > m_parent.Options.timeout) break;
 	}
 }
 

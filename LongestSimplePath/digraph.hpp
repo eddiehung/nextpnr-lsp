@@ -110,6 +110,8 @@ public:
 		int pto_num_times_restart {1};
 		int pto_num_heuristic_sort{10000};
 		int pto_scc_size_max_pointless {4};
+
+		int timeout = 0;
 	};
 	
 	SearchOptions Options {};
