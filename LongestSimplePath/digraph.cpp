@@ -462,6 +462,7 @@ DiGraph DiGraph::with_nodes_removed(std::vector<node_t>& toRemove) const
 	}
 
 	DiGraph D(new_names);
+	D.Options = Options;
 
 	for (size_t v = 0; v < new_n; ++v)
 	{
