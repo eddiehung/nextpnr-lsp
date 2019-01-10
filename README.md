@@ -1,6 +1,24 @@
 nextpnr -- a portable FPGA place and route tool
 ===============================================
 
+***
+### This repository is an artifact supporting the private peer-review process for a submitted conference paper.
+#### It is based on upstream [nextpnr](https://github.com/YosysHQ/nextpnr).
+#### It also contains (a squashed git subtree of) https://github.com/mraggi/LongestSimplePath modified slightly to add a timeout capability.
+Instructions for reproducing experiment described in paper:
+1. Install all dependencies as described below
+2. (From the root of the repository) Execute `cmake . -DARCH=ice40 -DBUILD_GUI=off -DBUILD_PYTHON=off`
+3. `make`
+4. `cd ice40`
+5. `bash RUNME.sh`
+6. Generated artifacts will be:
+* `shortest.{log,asc,bin}` (log output, ASCII bitstream, binary bitstream)
+* `longest_in_10.{log,asc,bin}`
+* `longest_in_30.{log,asc,bin}`
+* `longest_in_300.{log,asc,bin}`
+* `longest_in_3000.{log,asc,bin}`
+***
+
 nextpnr aims to be a vendor neutral, timing driven, FOSS FPGA place and route
 tool.
 
