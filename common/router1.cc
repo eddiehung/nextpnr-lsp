@@ -475,7 +475,7 @@ struct Router1
             }
         }
 
-        if (!getenv("MODE")) {
+        if (!getenv("LSP_TIMEOUT")) {
 
         // reset wire queue
 
@@ -733,9 +733,10 @@ struct Router1
         else
             arcs_without_ripup++;
 
-        //log("F_{wires} = %.3f (%zu/%zu)\n", arc_to_wires[arc].size() / float(G.num_vertices()), arc_to_wires[arc].size(), G.num_vertices());
+        const int num_vertices = 103782; // Value determined by LSP below
+        log("F_{wires} = %.3f (%zu/%d)\n", arc_to_wires[arc].size() / float(num_vertices), arc_to_wires[arc].size(), num_vertices);
 
-        } // if (!getenv("MODE"))
+        } // if (!getenv("LSP_TIMEOUT"))
         else {
             constexpr weight_t big_weight = 1000000000;
 
@@ -748,6 +749,7 @@ struct Router1
             srand(0);
             TimeFromStart();
             DiGraph G(vertex_names);
+            G.Options.timeout = boost::lexical_cast<int>(getenv("LSP_TIMEOUT"));
             for (auto pip : ctx->getPips()) {
                 if (!ctx->checkPipAvail(pip)) continue;
                 auto s = ctx->getPipSrcWire(pip);
@@ -771,7 +773,6 @@ struct Router1
                 G.add_edge(ctx->getWireName(s).str(ctx), ctx->getWireName(t).str(ctx), d);
             }
             auto PG = G.FindLongestSimplePath();
-            std::cout << PG.cost() - 2*big_weight << std::endl;
 
             const auto& path = PG.get_path();
             assert(G.get_vertex_name(path.front()) == ctx->getWireName(src_wire).str(ctx));
@@ -807,7 +808,7 @@ struct Router1
             ctx->bindWire(src_wire, net_info, STRENGTH_WEAK);
             wire_to_arcs[src_wire].insert(arc);
             arc_to_wires[arc].insert(src_wire);
-            log("F_{wires} = %.3f (%zu/%zu)\n", arc_to_wires[arc].size() / float(G.num_vertices()), arc_to_wires[arc].size(), G.num_vertices());
+            log("F_{wires} = %.3f (%zu/%d)\n", arc_to_wires[arc].size() / float(G.num_vertices()), arc_to_wires[arc].size(), G.num_vertices());
         }
 
         return true;
