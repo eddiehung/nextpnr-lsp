@@ -12,11 +12,11 @@ Instructions for reproducing experiment described in paper:
 4. `cd ice40`
 5. `bash RUNME.sh`
 6. Generated artifacts will be:
-* `shortest.{log,asc,bin}` (log output, ASCII bitstream, binary bitstream)
-* `longest_in_10.{log,asc,bin}`
-* `longest_in_30.{log,asc,bin}`
-* `longest_in_300.{log,asc,bin}`
-* `longest_in_3000.{log,asc,bin}`
+   * `shortest.{log,asc,bin}` (log output, ASCII bitstream, binary bitstream)
+   * `longest_in_10.{log,asc,bin}`
+   * `longest_in_30.{log,asc,bin}`
+   * `longest_in_300.{log,asc,bin}`
+   * `longest_in_3000.{log,asc,bin}`
 ***
 
 nextpnr aims to be a vendor neutral, timing driven, FOSS FPGA place and route
