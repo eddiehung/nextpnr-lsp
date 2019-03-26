@@ -2,7 +2,13 @@ nextpnr -- a portable FPGA place and route tool
 ===============================================
 
 ***
-### This repository is an artifact supporting the double-blind peer-review process for a submitted conference paper.
+### This repository is an artifact referenced from our research paper:
+
+> Yosys+nextpnr: an Open Source Framework from Verilog to Bitstream for Commercial FPGAs\
+> [David Shah](https://github.com/daveshah1), [Eddie Hung](https://github.com/eddiehung), [Clifford Wolf](https://github.com/cliffordwolf), [Serge Bazanski](https://github.com/q3k), [Dan Gisselquist](https://github.com/zipcpu), [Miodrag Milanović](https://github.com/mmicko)
+
+to appear at [IEEE FCCM 2019](https://fccm.org); preprint available from [arXiv](https://arxiv.org/abs/1903.10407).
+
 #### It is based on upstream [nextpnr](https://github.com/YosysHQ/nextpnr).
 #### It also contains (a squashed git subtree of) https://github.com/mraggi/LongestSimplePath modified slightly to add a timeout capability.
 Instructions for reproducing experiment described in the paper:
